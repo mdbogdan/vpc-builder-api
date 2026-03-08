@@ -1,0 +1,99 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Serverless API to create VPCs and store their metadata
+
+Resources:
+  VpcMetadataTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      PrimaryKey:
+        Name: vpc_id
+        Type: String
+
+  ApiUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: VpcApiUsers
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: false 
+      AutoVerifiedAttributes:
+        - email
+
+  ApiUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref ApiUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+  VpcApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Prod
+      Auth:
+        DefaultAuthorizer: CognitoAuth
+        Authorizers:
+          CognitoAuth:
+            UserPoolArn: !GetAtt ApiUserPool.Arn
+
+  CreateVpcFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.create_vpc_handler
+      Runtime: python3.12
+      Timeout: 30 
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref VpcMetadataTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref VpcMetadataTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ec2:CreateVpc
+                - ec2:CreateSubnet
+                - ec2:ModifyVpcAttribute
+                - ec2:CreateTags
+              Resource: "*"
+      Events:
+        PostApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref VpcApi
+            Path: /vpc
+            Method: post
+
+  GetVpcFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: app.get_vpc_handler
+      Runtime: python3.12
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref VpcMetadataTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref VpcMetadataTable
+      Events:
+        GetApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref VpcApi
+            Path: /vpc
+            Method: get
+
+Outputs:
+  ApiUrl:
+    Description: "API Gateway endpoint URL"
+    Value: !Sub "https://${VpcApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/vpc/"
+  CognitoClientId:
+    Description: "Cognito Client ID for authentication"
+    Value: !Ref ApiUserPoolClient
+  CognitoUserPoolId:
+    Description: "Cognito User Pool ID for managing users"
+    Value: !Ref ApiUserPool
